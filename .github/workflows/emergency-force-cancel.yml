@@ -1,0 +1,30 @@
+name: Emergency Force Cancel Stuck Run
+
+on:
+  push:
+    paths:
+      - .github/workflows/emergency-force-cancel.yml
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Numeric Actions run ID to force cancel (no snapshot guarantee)'
+        required: true
+        type: string
+
+permissions:
+  actions: write
+
+jobs:
+  force-cancel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Force cancel unresponsive workflow run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_RUN_ID: ${{ github.event_name == 'push' && '38237712001' || inputs.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_RUN_ID" =~ ^[0-9]+$ ]] || exit 1
+          echo "Force cancelling stuck run $TARGET_RUN_ID. Unsaved container changes may be lost."
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$TARGET_RUN_ID/force-cancel"
