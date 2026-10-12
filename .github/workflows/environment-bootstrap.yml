@@ -1,0 +1,51 @@
+name: Initialize Persistent GHCR Environment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/environment-bootstrap.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deepseek-harness-session
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create pristine image only when no user snapshot exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-environment:current"
+          if docker pull "$image"; then
+            echo "Existing user snapshot found. Never overwrite it with a base image."
+            exit 0
+          fi
+          error_log="$(mktemp)"
+          if docker pull "$image" 2>"$error_log"; then
+            echo "Snapshot became available; preserving it."
+            exit 0
+          fi
+          if ! grep -Eiq 'manifest unknown|name unknown|not found|404 Not Found' "$error_log"; then
+            echo "::error::GHCR pull failed for reasons other than a missing tag; preserving data."
+            cat "$error_log" >&2
+            exit 1
+          fi
+          echo "Creating first clean image, preserving all future snapshots."
+          docker build -f Dockerfile.environment -t "$image" .
+          docker push "$image"
+          echo "PRISTINE GHCR BASE READY: $image"
