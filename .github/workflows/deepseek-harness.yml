@@ -35,8 +35,8 @@ jobs:
           node --check scripts/launch.mjs
           node --check scripts/proxy.mjs
 
-      - name: Test proxy cross-origin protection
-        run: node --test scripts/proxy.test.mjs
+      - name: Test proxy authentication and origin security
+        run: node --test scripts/proxy.test.mjs scripts/proxy.integration.test.mjs
 
       - name: Verify npm latest DeepSeek Harness Web CLI
         env:
