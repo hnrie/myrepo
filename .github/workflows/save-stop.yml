@@ -1,0 +1,11 @@
+name: Save and Stop DeepSeek Harness
+
+on:
+  workflow_dispatch:
+
+jobs:
+  save-stop-request:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request normal save and shutdown
+        run: echo 'Stop request recorded; check the active Harness run for its GHCR backup.'
