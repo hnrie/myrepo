@@ -24,6 +24,7 @@ if (!Number.isInteger(minutes) || minutes < 10 || minutes > 330) {
   throw new Error('Session must be 10-330 minutes');
 }
 
+// Requires DeepSeek Harness 0.2.1-alpha.2 or later with --public-url support.
 // Harness loads this override after its bundled Web profile.
 // The API key is read from the environment; it is never stored in the repo.
 const patch = [
@@ -105,7 +106,7 @@ function launchHarness(publicUrl) {
   const fqdn = new URL(publicUrl).hostname;
   console.log('Web UI will be available at ' + publicUrl + ' after start-up.');
   harness = spawn('npx', [
-    '--yes', '@deepseek-ai/dsh', 'web', '--no-open', '--port', '3080',
+    '--yes', '@deepseek-ai/dsh@0.2.1-alpha.2', 'web', '--no-open', '--port', '3080',
     '--public-url', publicUrl + '/', '--trusted-host', fqdn
   ], {
     cwd: process.cwd(),
