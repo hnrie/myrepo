@@ -24,27 +24,39 @@ other reasons, startup aborts rather than resetting the working environment.
 All user operations should happen INSIDE the DeepSeek Harness terminal or
 agent running inside the container, **not** on the temporary Avrea host.
 
-## Saving
+## Saving — only on stop or workflow cancellation
 
-- A checkpoint commits the full container filesystem and pushes the new image
-  every 20 minutes while the session is running.
-- A normal session ending performs an additional push.
-- A workflow finalizer attempts a checkpoint after crashes where the Docker
-  container is still running.
-- The local container's writable layer includes uncommitted files. A git
-  commit is NOT required for Docker persistence.
-- The latest successfully published image is the restart point.
+**There are no periodic backups or 20-minute checkpoints.** The runner saves
+the entire container writable filesystem to GHCR only when:
 
-GHCR image pushes can fail due to size, network, permission or account limits.
-A hard Avrea shutdown or workflow cancellation cannot guarantee a final push;
-changes made after the last successful checkpoint can be lost. Check the logs
-for "GHCR CHECKPOINT UPLOADED" before trusting a save. A running process and
-its RAM are never restored; tools and applications start fresh, with files
-intact.
+- The selected session duration ends normally.
+- The agent exits or the launcher fails after the container is restored.
+- GitHub reaches the protected finalizer after **Cancel workflow** is clicked.
 
-Docker commit pauses the container briefly. Don't run long package
-installations or database transactions while taking a critical snapshot.
-Databases can require application-aware backups for guaranteed consistency.
+The workflow's harness job has `if: always()` and its final checkpoint step
+also has `if: always()`. This is based on GitHub's documented cancellation
+semantics: the finalizer remains eligible to run after a normal cancellation
+request. It calls `scripts/environment-checkpoint.sh` once, uses
+`docker commit --pause=true` and `docker push`, then removes the running
+container after a successful upload. The full writable layer contains
+uncommitted project edits, installed applications and DeepSeek chat data.
+
+**This is a best-effort cleanup, not a guaranteed transactional backup.**
+GitHub can forcibly stop jobs after cancellation, an Avrea VM can disappear,
+or an image push can fail or exceed a service limit. The GitHub **Cancel
+workflow** command still marks the run `cancelled`, and protected jobs may
+continue their current action before running cleanup; it is not necessarily
+immediate. A forced cancellation or host failure can leave changes unsaved.
+
+You can confirm a successful backup only when the log shows
+`BACKUP CONFIRMED: GHCR CHECKPOINT UPLOADED`. If you do not see that, the
+previous successfully pushed `:current` image remains the available restore
+point. With **no periodic checkpoints**, a failed final save can lose the
+**entire session's** unsaved container changes.
+
+A container image is not a VM snapshot. It never saves host applications,
+RAM, running processes or mounted volumes. This container intentionally
+uses no volumes or bind mounts to maximize captured filesystem state.
 
 ## Set up and launch
 
@@ -57,7 +69,7 @@ Databases can require application-aware backups for guaranteed consistency.
    HARNESS_ACCESS_PASSWORD.
 6. Work inside the GUI. System packages, Python/Node installs, chat history,
    project files and uncommitted edits become part of the next image.
-7. Look for a successful GHCR upload before ending. Re-run to restore.
+7. Wait for the finalizer to log `BACKUP CONFIRMED` after normal shutdown or cancellation. Re-run to restore.
 
 The container starts from the previous image even if its repository branch
 differs from current main. The host controller scripts always load from main.
@@ -120,5 +132,5 @@ snapshot and successfully pulled by the production restore script, which
 also cloned the agent workspace in a fresh container:
 https://github.com/hnrie/myrepo/actions/runs/38233159198
 
-The first Avrea job still has to complete its own live checkpoint upload.
+The first Avrea job still has to complete its own live final snapshot upload.
 Large files, external services, and Avrea limits can cause failures.
