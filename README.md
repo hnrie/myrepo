@@ -11,14 +11,21 @@ On-demand **DeepSeek Harness Web UI** on the Avrea GitHub Actions runner
 
 ## DeepSeek Harness version
 
-This deployment currently pins `@deepseek-ai/dsh@0.2.1-alpha.2`, the
-newest npm pre-release checked on 2026-10-12. The npm `latest` dist-tag
-points to `0.2.0-rc.2`, which lacks the `--public-url` flag needed for
-the tunnel reverse proxy. The workflow preflights the exact package version
-and checks the Web CLI options before opening the tunnel.
+The launcher and workflow use **`@deepseek-ai/dsh@latest`**, resolving the
+current npm `latest` dist-tag on every new job. There is **no alpha pin**.
+The workflow checks that the installed CLI supports `--no-open` and
+`--port` before starting the tunnel.
 
-This is a developer-preview release. Future updates should change both
-`scripts/launch.mjs` and the workflow's preflight version together.
+The stable-release-compatible proxy keeps the public tunnl.gg URL in your
+browser, but rewrites upstream Host and Origin to `127.0.0.1:3080` so
+DeepSeek Harness can validate its host-bound session cookie. The proxy first
+rejects cross-origin browser traffic, and the HTTPS tunnel remains password
+protected. No `--public-url` or `--trusted-host` flags are needed.
+
+The model override is stored in `$DSH_HOME/cordis.patch.yml`, applied after
+the stock Web profile is initialized; the gateway API key remains a secret
+environment variable. DeepSeek Harness is developer preview software, so an
+unannounced npm `latest` update can still introduce breaking changes.
 
 ## Initial setup
 
