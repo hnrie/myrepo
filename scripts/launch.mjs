@@ -2,9 +2,8 @@ import { spawn, execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { startProxy } from './proxy.mjs';
+import { buildHarnessPatch } from './harness-config.mjs';
 
-const ENDPOINT = 'https://clever-moon-f3ca15b3.tunnl.gg/v1';
-const MODEL = 'oc/muse-spark-1.3-contributor-free';
 const minutes = Number(process.env.SESSION_MINUTES || 330);
 const home = process.env.DSH_HOME;
 const key = process.env.CUSTOM_API_KEY;
@@ -29,35 +28,7 @@ if (!Number.isInteger(minutes) || minutes < 10 || minutes > 330) {
 // Use npm's latest dist-tag; the public tunnel URL is handled by the authenticated local proxy.
 // Harness loads this override after its bundled Web profile.
 // The API key is read from the environment; it is never stored in the repo.
-const patch = [
-  '- id: llm-pi-ai',
-  '  config:',
-  '    providers:',
-  '      custom-muse:',
-  '        displayName: Muse Spark custom gateway',
-  '        apiKeyEnv: CUSTOM_API_KEY',
-  '        api: openai-responses',
-  '        baseURL: ' + ENDPOINT,
-  '        reasoning: xhigh',
-  '        models:',
-  '          - id: ' + MODEL,
-  '            name: Muse Spark 1.3 Contributor Free',
-  '            contextWindow: 1048576',
-  '            maxTokens: 131072',
-  '            input: [text, image]',
-  '            reasoningEfforts:',
-  '              off:',
-  '              low: low',
-  '              medium: medium',
-  '              high: high',
-  '              xhigh: xhigh',
-  '- id: agent-default-model',
-  '  config:',
-  '    provider: custom-muse',
-  '    model: ' + MODEL,
-  '    reasoningEffort: xhigh',
-  ''
-].join('\n');
+const patch = buildHarnessPatch();
 // Let the npm CLI initialize the stock Web profile itself. The home-level
 // override is applied afterward and does not prevent profile initialization.
 mkdirSync(home, { recursive: true, mode: 0o700 });
