@@ -8,6 +8,7 @@ on:
       - 'scripts/proxy.mjs'
       - 'scripts/proxy.test.mjs'
       - 'scripts/proxy.integration.test.mjs'
+      - 'scripts/proxy.browser.test.mjs'
       - '.github/workflows/proxy-tests.yml'
   workflow_dispatch:
 
@@ -30,3 +31,7 @@ jobs:
           node --check scripts/proxy.integration.test.mjs
       - name: Run mocked DeepSeek authentication and WebSocket security tests
         run: node --test scripts/proxy.test.mjs scripts/proxy.integration.test.mjs
+      - name: Install browser test driver (no bundled browser download)
+        run: npm install --no-save --no-package-lock --ignore-scripts playwright-core
+      - name: Run real Chromium cross-origin authentication smoke test
+        run: node scripts/proxy.browser.test.mjs
