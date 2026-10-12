@@ -54,6 +54,19 @@ previous successfully pushed `:current` image remains the available restore
 point. With **no periodic checkpoints**, a failed final save can lose the
 **entire session's** unsaved container changes.
 
+### Cancellation tested against GHCR
+
+A real GitHub REST `Cancel workflow` request was issued against a test run.
+The protected cleanup step successfully saved the unsaved container filesystem
+to the **actual GHCR registry** and restored it from a fresh pull:
+https://github.com/hnrie/myrepo/actions/runs/38234473491
+
+As expected, the run's final status was **Cancelled**, while the save step
+itself succeeded. The test also exposed that GitHub can allow the current
+foreground step to finish after cancellation. The `always()` finalizer
+does not guarantee prompt shutdown of a busy step, unlimited time to push, or
+protection against force-cancel. Follow the finalizer logs before restarting.
+
 A container image is not a VM snapshot. It never saves host applications,
 RAM, running processes or mounted volumes. This container intentionally
 uses no volumes or bind mounts to maximize captured filesystem state.
