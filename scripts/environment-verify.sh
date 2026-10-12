@@ -26,7 +26,7 @@ CUSTOM_API_KEY="never-commit-this-synthetic-test-key" \
 
 echo "Installing the actual npm latest DeepSeek Harness inside the durable container..."
 docker exec "$NAME" npm install -g @deepseek-ai/dsh@latest
-docker exec "$NAME" sh -ec 'dsh web --help | grep -Fq -- "--port"'
+docker exec "$NAME" sh -ec 'dsh web --help > /tmp/dsh-cli-help.txt; grep -Fq -- "--port" /tmp/dsh-cli-help.txt'
 
 docker commit --pause=true "$NAME" "$IMAGE-snapshot" >/dev/null
 if docker image inspect "$IMAGE-snapshot" -f '{{json .Config.Env}}' | grep -Fq 'never-commit-this-synthetic-test-key'; then
@@ -42,6 +42,7 @@ docker exec "$NAME" sh -euc '
   grep -Fxq "installed-app" /root/projects/config.txt
   test "$(my-installed-app)" = "my-installed-app-works"
   test "$(node --version | cut -c1-3)" = "v22"
-  dsh web --help | grep -Fq -- "--no-open"
+  dsh web --help > /tmp/dsh-cli-help-restored.txt
+  grep -Fq -- "--no-open" /tmp/dsh-cli-help-restored.txt
 '
 echo "SNAPSHOT ROUNDTRIP PASSED: uncommitted project files, chat data, installed applications, real DeepSeek Harness CLI, /root and Node 22 restored."
