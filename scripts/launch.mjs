@@ -56,8 +56,10 @@ const patch = [
   '    reasoningEffort: xhigh',
   ''
 ].join('\n');
-mkdirSync(join(home, 'profiles', 'web'), { recursive: true, mode: 0o700 });
-writeFileSync(join(home, 'profiles', 'web', 'cordis.patch.yml'), patch, { mode: 0o600 });
+// Let the npm CLI initialize the stock Web profile itself. The home-level
+// override is applied afterward and does not prevent profile initialization.
+mkdirSync(home, { recursive: true, mode: 0o700 });
+writeFileSync(join(home, 'cordis.patch.yml'), patch, { mode: 0o600 });
 
 const server = startProxy({ password, getToken: () => webToken, getPublicUrl: () => url });
 function captureLines(stream, fn) {
