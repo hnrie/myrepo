@@ -1,0 +1,49 @@
+name: GitHub Cancel Cleanup Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cancel-cleanup-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  cleanup-test:
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - name: Prepare synthetic persisted state
+        run: |
+          set -euo pipefail
+          docker run -d --name cancel-check alpine:3.20 sleep 300
+          docker exec cancel-check sh -c 'echo before-cancel > /root/unsaved.txt'
+          echo "Synthetic uncommitted state exists."
+
+      - name: Simulate a user pressing Cancel workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            sleep 4
+            echo "REQUESTING REGULAR GITHUB WORKFLOW CANCELLATION"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel"
+          ) &
+          sleep 40
+
+      - name: Save data after normal Cancel workflow request
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CANCEL CLEANUP STEP STARTED"
+          docker commit cancel-check cancel-checkpoint:latest
+          docker rm -f cancel-check
+          docker run --rm cancel-checkpoint:latest sh -c 'test "$(cat /root/unsaved.txt)" = "before-cancel"'
+          echo "CANCEL SNAPSHOT RESTORE PASSED"
