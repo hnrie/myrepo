@@ -11,6 +11,8 @@ const identity = process.env.TUNNL_IDENTITY_FILE;
 const apiKey = process.env.CUSTOM_API_KEY;
 const image = process.env.ENV_IMAGE;
 const container = 'deepseek-environment';
+// A Save & Stop request only applies to launchers already active at request time.
+const launcherStartedAt = Date.now();
 let webToken = '';
 let url = '';
 let harness;
@@ -179,3 +181,50 @@ function startTunnel() {
   });
 }
 if (!stopping) startTunnel();
+
+/**
+ * Graceful shutdown control: a manually dispatched Save and Stop workflow is
+ * an authenticated marker in GitHub's Actions API. Poll from the long-running
+ * process without pushing to GHCR on every interval. On a matching new marker,
+ * stop normally so the next workflow step performs the *single* checkpoint.
+ *
+ * This deliberately does not use GitHub's Cancel workflow API: cancellation
+ * has a short shutdown deadline and cannot guarantee an image upload.
+ */
+let checkingSaveStop = false;
+async function checkSaveStopRequest() {
+  if (stopping || checkingSaveStop) return;
+  const token = process.env.GITHUB_TOKEN;
+  const repository = process.env.GITHUB_REPOSITORY;
+  if (!token || !repository) return;
+  checkingSaveStop = true;
+  try {
+    const repoPath = repository.split('/').map(encodeURIComponent).join('/');
+    const endpoint = 'https://api.github.com/repos/' + repoPath +
+      '/actions/workflows/save-stop.yml/runs?event=workflow_dispatch&per_page=20';
+    const response = await fetch(endpoint, {
+      headers: {
+        Authorization: 'Bearer ' + token,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28'
+      },
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) throw new Error('GitHub Actions API status ' + response.status);
+    const data = await response.json();
+    if (Array.isArray(data.workflow_runs) && data.workflow_runs.some(run =>
+      run.event === 'workflow_dispatch' &&
+      Date.parse(run.created_at) > launcherStartedAt
+    )) {
+      console.log('Save & Stop request detected; handing off to GHCR finalizer.');
+      stop(0);
+    }
+  } catch (error) {
+    console.warn('Save & Stop request check failed: ' + error.message);
+  } finally {
+    checkingSaveStop = false;
+  }
+}
+const saveStopPoll = setInterval(() => void checkSaveStopRequest(), 15000);
+saveStopPoll.unref();
+void checkSaveStopRequest();
