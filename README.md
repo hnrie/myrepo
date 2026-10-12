@@ -9,6 +9,17 @@ On-demand **DeepSeek Harness Web UI** on the Avrea GitHub Actions runner
 - HTTP Basic password at the tunnel edge **plus** DeepSeek Harness's native signed-session authentication.
 - The SSH tunnel reconnects while a workflow job is running. The compute **does not run forever**; sessions default to 330 minutes and the platform may impose limits or charge for usage.
 
+## DeepSeek Harness version
+
+This deployment currently pins `@deepseek-ai/dsh@0.2.1-alpha.2`, the
+newest npm pre-release checked on 2026-10-12. The npm `latest` dist-tag
+points to `0.2.0-rc.2`, which lacks the `--public-url` flag needed for
+the tunnel reverse proxy. The workflow preflights the exact package version
+and checks the Web CLI options before opening the tunnel.
+
+This is a developer-preview release. Future updates should change both
+`scripts/launch.mjs` and the workflow's preflight version together.
+
 ## Initial setup
 
 In **Settings → Secrets and variables → Actions → New repository secret**, add:
