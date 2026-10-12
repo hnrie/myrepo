@@ -30,6 +30,11 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Validate launcher source syntax
+        run: |
+          node --check scripts/launch.mjs
+          node --check scripts/proxy.mjs
+
       - name: Restore work branch
         shell: bash
         run: |
