@@ -18,26 +18,41 @@ function unauthorized(res) {
   res.end('Sign in with username agent and your configured password.');
 }
 
-export function startProxy({ password, getToken, getPublicUrl, port = 3081 }) {
-  // Reject cross-site browser requests BEFORE mapping the upstream authority
-  // to localhost. Otherwise rewriting Origin would weaken DSH's CSRF fence.
-  function isAllowedBrowserOrigin(req) {
-    if (req.headers['sec-fetch-site'] === 'cross-site') return false;
-    const origin = req.headers.origin;
-    if (origin === undefined) return true;
-    try {
-      const publicUrl = getPublicUrl();
-      return !!publicUrl && new URL(origin).origin === new URL(publicUrl).origin;
-    } catch {
-      return false;
-    }
+// Browsers mark legitimate links from other sites as "cross-site".
+// Allow only safe, top-level document GET navigations to the app entrypoint.
+// Cross-site API requests and WebSocket handshakes stay forbidden.
+export function isAllowedBrowserOrigin(req, publicUrl) {
+  const headers = req.headers ?? {};
+  const path = (req.url || '/').split('?')[0];
+  const entrypoint = path === '/' || path === '/index.html';
+  const topLevelNavigation =
+    req.method === 'GET' &&
+    entrypoint &&
+    headers['sec-fetch-mode'] === 'navigate' &&
+    headers['sec-fetch-dest'] === 'document';
+
+  if (topLevelNavigation) return true;
+  if (headers['sec-fetch-site'] === 'cross-site') return false;
+
+  const origin = headers.origin;
+  if (origin === undefined) return true;
+  try {
+    return Boolean(publicUrl) && new URL(origin).origin === new URL(publicUrl).origin;
+  } catch {
+    return false;
   }
+}
+
+export function startProxy({ password, getToken, getPublicUrl, port = 3081 }) {
+  // Check browser context BEFORE translating Host/Origin to the backend's
+  // loopback authority, preserving the upstream DSH CSRF fence.
+  const allowedOrigin = req => isAllowedBrowserOrigin(req, getPublicUrl());
   if (!password || password.length < 16) {
     throw new Error('HARNESS_ACCESS_PASSWORD must be at least 16 characters.');
   }
   const server = http.createServer((req, res) => {
     if (!checkPassword(req.headers.authorization, password)) return unauthorized(res);
-    if (!isAllowedBrowserOrigin(req)) {
+    if (!allowedOrigin(req)) {
       res.writeHead(403, { 'Cache-Control': 'no-store' });
       return res.end('Cross-origin requests are not permitted.');
     }
@@ -92,7 +107,7 @@ export function startProxy({ password, getToken, getPublicUrl, port = 3081 }) {
   // DSH itself requires its signed browser-session cookie for EVERY WebSocket
   // request; only the password-gated HTTP root can mint that cookie.
   server.on('upgrade', (req, socket, head) => {
-    if (!isAllowedBrowserOrigin(req)) {
+    if (!allowedOrigin(req)) {
       socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
       return;
     }
