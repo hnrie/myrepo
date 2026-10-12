@@ -35,22 +35,23 @@ jobs:
           node --check scripts/launch.mjs
           node --check scripts/proxy.mjs
 
-      - name: Verify DeepSeek Harness 0.2.1-alpha.2 Web CLI
+      - name: Verify npm latest DeepSeek Harness Web CLI
         env:
           DSH_HOME: ${{ runner.temp }}/deepseek-harness-home
         shell: bash
         run: |
           set -euo pipefail
-          npx --yes @deepseek-ai/dsh@0.2.1-alpha.2 web --help > "$RUNNER_TEMP/dsh-web-help.txt"
-          grep -Fq -- '--public-url' "$RUNNER_TEMP/dsh-web-help.txt" || {
-            echo "::error::Installed DeepSeek Harness lacks --public-url support"
+          echo "npm latest release: $(npm view @deepseek-ai/dsh dist-tags.latest)"
+          npx --yes @deepseek-ai/dsh@latest web --help > "$RUNNER_TEMP/dsh-web-help.txt"
+          grep -Fq -- '--no-open' "$RUNNER_TEMP/dsh-web-help.txt" || {
+            echo "::error::DeepSeek Harness latest lacks --no-open"
             exit 1
           }
-          grep -Fq -- '--trusted-host' "$RUNNER_TEMP/dsh-web-help.txt" || {
-            echo "::error::Installed DeepSeek Harness lacks --trusted-host support"
+          grep -Fq -- '--port' "$RUNNER_TEMP/dsh-web-help.txt" || {
+            echo "::error::DeepSeek Harness latest lacks --port"
             exit 1
           }
-          echo "DeepSeek Harness 0.2.1-alpha.2 Web CLI supports remote tunnel flags."
+          echo "DeepSeek Harness npm latest Web CLI is compatible with the loopback proxy."
 
       - name: Restore work branch
         shell: bash
