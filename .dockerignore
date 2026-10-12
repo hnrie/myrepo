@@ -1,0 +1,10 @@
+**/.git
+**/.env
+**/.env.*
+**/node_modules
+**/tunnl_harness_key*
+**/id_ed25519*
+**/secrets/*
+**/credentials*
+**/*.pem
+**/*.key
