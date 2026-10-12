@@ -63,11 +63,14 @@ secret at runtime, not included in configuration files.
 
 ## Working on code and persistence
 
-The workflow checks out `agent/workspace`, creating the branch on the first
-run. It periodically pushes **already committed** changes to that branch.
-Commit your work before the job ends. **Uncommitted edits and browser session
-history are lost** when the ephemeral runner is destroyed. The tunnel hostname
-remains the same on future runs, but there will be downtime between runs.
+The workflow keeps its launcher and proxy scripts on the current `main`
+checkout, and creates a **separate git worktree** on `agent/workspace` for
+DeepSeek Harness to edit. This prevents an older work branch from replacing
+new launcher fixes. The launcher periodically pushes **already committed**
+changes to `agent/workspace`. Commit your work before the job ends.
+**Uncommitted edits and browser session history are lost** when the ephemeral
+runner is destroyed. The tunnl.gg hostname remains the same on future runs,
+but there will be downtime between runs.
 
 The workflow file has **no** `timeout-minutes` setting. The launcher does
 stop each session after the selected duration (10–330 minutes). Avrea and
