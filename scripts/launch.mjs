@@ -6,7 +6,6 @@ import { startProxy } from './proxy.mjs';
 import { buildHarnessPatch } from './harness-config.mjs';
 
 const minutes = Number(process.env.SESSION_MINUTES || 330);
-const interval = Number(process.env.SNAPSHOT_INTERVAL_MINUTES || 20);
 const password = process.env.HARNESS_ACCESS_PASSWORD;
 const identity = process.env.TUNNL_IDENTITY_FILE;
 const apiKey = process.env.CUSTOM_API_KEY;
@@ -18,16 +17,12 @@ let harness;
 let tunnel;
 let stopping = false;
 let reconnects = 0;
-let snapshotPromise;
 
 if (!password || password.length < 16 || !identity || !apiKey || !image) {
   throw new Error('Missing required Actions secrets or ENV_IMAGE. Password must be 16+ characters.');
 }
 if (!Number.isInteger(minutes) || minutes < 10 || minutes > 330) {
   throw new Error('SESSION_MINUTES must be 10-330');
-}
-if (!Number.isInteger(interval) || interval < 5 || interval > 120) {
-  throw new Error('SNAPSHOT_INTERVAL_MINUTES must be 5-120');
 }
 
 const temp = mkdtempSync(join(tmpdir(), 'dsh-container-start-'));
@@ -71,53 +66,22 @@ function runCommand(program, argv, environment = process.env) {
   });
 }
 
-async function saveSnapshot() {
-  if (snapshotPromise) return snapshotPromise;
-  snapshotPromise = runCommand('bash', ['scripts/environment-checkpoint.sh'])
-    .then(() => console.log('Environment snapshot uploaded; uncommitted /workspace and installed apps preserved.'))
-    .catch(error => {
-      console.error('SNAPSHOT FAILED: ' + error.message);
-      throw error;
-    })
-    .finally(() => { snapshotPromise = undefined; });
-  return snapshotPromise;
-}
-
-const timer = setInterval(() => {
-  void saveSnapshot().catch(() => {
-    console.error('Snapshot upload failed; prior GHCR image remains the restore point.');
-  });
-}, interval * 60_000);
-
-async function stop(exitCode = 0) {
+// No interval-based backups: only normal shutdown or workflow cancellation
+// invokes the GitHub Actions finalizer, separately from this interruptible
+// step. Cancel sends signals to the shell and can kill descendants in ~10s.
+function stop(exitCode = 0) {
   if (stopping) return;
   stopping = true;
-  clearInterval(timer);
-  console.log('Ending interactive session. Saving entire container writable filesystem...');
-  try {
-    // If a periodic upload was in progress, wait for it, then take a fresh
-    // snapshot to capture changes made during that upload.
-    if (snapshotPromise) await snapshotPromise;
-    await saveSnapshot();
-    if (process.env.RUNNER_TEMP) {
-      writeFileSync(join(process.env.RUNNER_TEMP, 'environment-final-saved.ok'), 'saved\n');
-    }
-  } catch {
-    exitCode = 1;
-    console.error('Final snapshot failed. Previous successful GHCR checkpoint remains available.');
-  } finally {
-    harness?.kill('SIGTERM');
-    tunnel?.kill('SIGTERM');
-    proxy.close();
-    process.exitCode = exitCode;
-    // Allow the Docker CLI and SSH to release process handles, then finish.
-    setTimeout(() => process.exit(process.exitCode), 5000).unref();
-  }
+  console.log('Harness stopping. Protected workflow cleanup will save the container to GHCR.');
+  harness?.kill('SIGTERM');
+  tunnel?.kill('SIGTERM');
+  proxy.close();
+  process.exitCode = exitCode;
+  setTimeout(() => process.exit(exitCode), 1200).unref();
 }
-
-process.on('SIGINT', () => { void stop(1); });
-process.on('SIGTERM', () => { void stop(1); });
-setTimeout(() => { void stop(); }, minutes * 60_000);
+process.on('SIGINT', () => stop(130));
+process.on('SIGTERM', () => stop(143));
+setTimeout(() => stop(0), minutes * 60_000);
 
 // Runtime package installation occurs INSIDE the persistent container, so
 // the installed npm package will be present after the next successful commit.
@@ -127,7 +91,7 @@ try {
   await runCommand('docker', ['exec', container, 'dsh', 'web', '--help']);
 } catch (error) {
   console.error('Failed to install DeepSeek Harness inside the container:', error.message);
-  await stop(1);
+  stop(1);
 }
 
 function startHarness(publicUrl) {
