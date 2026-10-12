@@ -1,0 +1,85 @@
+name: DeepSeek Harness Web Session
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_minutes:
+        description: "Interactive session duration (10-330 minutes)"
+        required: true
+        type: number
+        default: 330
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deepseek-harness-session
+  cancel-in-progress: false
+
+jobs:
+  harness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - name: Checkout this project
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up recoverable agent work branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin agent/workspace >/dev/null; then
+            git fetch origin agent/workspace
+            git switch -C agent/workspace FETCH_HEAD
+          else
+            git switch -c agent/workspace
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          df -h /
+
+      - name: Check endpoint configuration
+        env:
+          CUSTOM_API_BASE_URL: ${{ vars.CUSTOM_API_BASE_URL }}
+          CUSTOM_MODEL_ID: ${{ vars.CUSTOM_MODEL_ID }}
+          CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CUSTOM_API_BASE_URL" || { echo "::error::Set CUSTOM_API_BASE_URL repository variable"; exit 1; }
+          test -n "$CUSTOM_MODEL_ID" || { echo "::error::Set CUSTOM_MODEL_ID repository variable"; exit 1; }
+          test -n "$CUSTOM_API_KEY" || { echo "::error::Set CUSTOM_API_KEY repository secret"; exit 1; }
+          test -n "$TAILSCALE_AUTHKEY" || { echo "::error::Set TAILSCALE_AUTHKEY repository secret"; exit 1; }
+
+      - name: Join private Tailscale network
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          version: latest
+
+      - name: Configure private HTTPS access
+        shell: bash
+        run: |
+          set -euo pipefail
+          fqdn="$(tailscale status --json | jq -r '.Self.DNSName // empty' | sed 's/\.$//')"
+          test -n "$fqdn" || { echo "::error::Tailscale node has no DNS name. Enable MagicDNS."; exit 1; }
+          echo "TAILSCALE_HOST=$fqdn" >> "$GITHUB_ENV"
+          tailscale serve --bg --yes --https=443 http://127.0.0.1:3081
+          printf '### DeepSeek Harness session\n\n' >> "$GITHUB_STEP_SUMMARY"
+          printf 'Private web UI: **https://%s/** (only your tailnet can access it).\n\n' "$fqdn" >> "$GITHUB_STEP_SUMMARY"
+          printf 'The Web UI may become available after the harness finishes installing. This run is temporary.\n' >> "$GITHUB_STEP_SUMMARY"
+          echo "Private UI address: https://$fqdn/"
+
+      - name: Launch DeepSeek Harness and checkpoint code
+        env:
+          TAILSCALE_HOST: ${{ env.TAILSCALE_HOST }}
+          CUSTOM_API_BASE_URL: ${{ vars.CUSTOM_API_BASE_URL }}
+          CUSTOM_MODEL_ID: ${{ vars.CUSTOM_MODEL_ID }}
+          CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
+          SESSION_MINUTES: ${{ inputs.session_minutes }}
+          DSH_HOME: ${{ runner.temp }}/deepseek-harness-home
+          DSH_TELEMETRY_MODE: DISABLED
+        run: node scripts/launch.mjs
