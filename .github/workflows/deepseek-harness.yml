@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       session_minutes:
-        description: "Interactive session duration (10-330 minutes)"
+        description: "Session duration in minutes (10-330)"
         required: true
         type: number
         default: 330
@@ -20,12 +20,17 @@ jobs:
   harness:
     runs-on: avrea-ubuntu-latest-32-vcpu
     steps:
-      - name: Checkout this project
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up recoverable agent work branch
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Restore work branch
         shell: bash
         run: |
           set -euo pipefail
@@ -35,50 +40,48 @@ jobs:
           else
             git switch -c agent/workspace
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           df -h /
 
-      - name: Check endpoint configuration
+      - name: Prepare stable tunnl.gg SSH identity
         env:
-          CUSTOM_API_BASE_URL: ${{ vars.CUSTOM_API_BASE_URL }}
-          CUSTOM_MODEL_ID: ${{ vars.CUSTOM_MODEL_ID }}
-          CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          TUNNL_SSH_PRIVATE_KEY: ${{ secrets.TUNNL_SSH_PRIVATE_KEY }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$CUSTOM_API_BASE_URL" || { echo "::error::Set CUSTOM_API_BASE_URL repository variable"; exit 1; }
-          test -n "$CUSTOM_MODEL_ID" || { echo "::error::Set CUSTOM_MODEL_ID repository variable"; exit 1; }
-          test -n "$CUSTOM_API_KEY" || { echo "::error::Set CUSTOM_API_KEY repository secret"; exit 1; }
-          test -n "$TAILSCALE_AUTHKEY" || { echo "::error::Set TAILSCALE_AUTHKEY repository secret"; exit 1; }
+          if [[ -z "$TUNNL_SSH_PRIVATE_KEY" ]]; then
+            echo "::error::Set TUNNL_SSH_PRIVATE_KEY in repository Actions secrets"
+            exit 1
+          fi
+          umask 077
+          mkdir -p "$RUNNER_TEMP/tunnl"
+          printf '%s\n' "$TUNNL_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/tunnl/id_ed25519"
+          chmod 600 "$RUNNER_TEMP/tunnl/id_ed25519"
+          ssh-keygen -y -P '' -f "$RUNNER_TEMP/tunnl/id_ed25519" > /dev/null || {
+            echo "::error::TUNNL_SSH_PRIVATE_KEY must be a valid unencrypted SSH private key"
+            exit 1
+          }
+          echo "TUNNL_IDENTITY_FILE=$RUNNER_TEMP/tunnl/id_ed25519" >> "$GITHUB_ENV"
 
-      - name: Join private Tailscale network
-        uses: tailscale/github-action@v4
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          version: latest
-
-      - name: Configure private HTTPS access
+      - name: Check session secrets
+        env:
+          CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
+          HARNESS_ACCESS_PASSWORD: ${{ secrets.HARNESS_ACCESS_PASSWORD }}
         shell: bash
         run: |
-          set -euo pipefail
-          fqdn="$(tailscale status --json | jq -r '.Self.DNSName // empty' | sed 's/\.$//')"
-          test -n "$fqdn" || { echo "::error::Tailscale node has no DNS name. Enable MagicDNS."; exit 1; }
-          echo "TAILSCALE_HOST=$fqdn" >> "$GITHUB_ENV"
-          tailscale serve --bg --yes --https=443 http://127.0.0.1:3081
-          printf '### DeepSeek Harness session\n\n' >> "$GITHUB_STEP_SUMMARY"
-          printf 'Private web UI: **https://%s/** (only your tailnet can access it).\n\n' "$fqdn" >> "$GITHUB_STEP_SUMMARY"
-          printf 'The Web UI may become available after the harness finishes installing. This run is temporary.\n' >> "$GITHUB_STEP_SUMMARY"
-          echo "Private UI address: https://$fqdn/"
+          test -n "$CUSTOM_API_KEY" || { echo "::error::Set CUSTOM_API_KEY in Actions secrets"; exit 1; }
+          test -n "$HARNESS_ACCESS_PASSWORD" || { echo "::error::Set HARNESS_ACCESS_PASSWORD in Actions secrets"; exit 1; }
+          if (( ${{ inputs.session_minutes }} < 10 || ${{ inputs.session_minutes }} > 330 )); then
+            echo "::error::Session duration must be 10-330 minutes"
+            exit 1
+          fi
 
-      - name: Launch DeepSeek Harness and checkpoint code
+      - name: Launch DeepSeek Harness Web UI
         env:
-          TAILSCALE_HOST: ${{ env.TAILSCALE_HOST }}
-          CUSTOM_API_BASE_URL: ${{ vars.CUSTOM_API_BASE_URL }}
-          CUSTOM_MODEL_ID: ${{ vars.CUSTOM_MODEL_ID }}
           CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
+          HARNESS_ACCESS_PASSWORD: ${{ secrets.HARNESS_ACCESS_PASSWORD }}
           SESSION_MINUTES: ${{ inputs.session_minutes }}
           DSH_HOME: ${{ runner.temp }}/deepseek-harness-home
-          DSH_TELEMETRY_MODE: DISABLED
+          DSH_TELEMETRY_DISABLED: '1'
         run: node scripts/launch.mjs
