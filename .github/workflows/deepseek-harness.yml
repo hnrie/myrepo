@@ -104,10 +104,14 @@ jobs:
         run: |
           set -euo pipefail
           if docker ps --format '{{.Names}}' | grep -Fxq deepseek-environment; then
-            echo "Publishing final environment state to GHCR..."
-            bash scripts/environment-checkpoint.sh
+            if [[ -f "$RUNNER_TEMP/environment-final-saved.ok" ]]; then
+              echo "The launcher already published its final checkpoint; skipping duplicate upload."
+            else
+              echo "Publishing fallback final checkpoint to GHCR..."
+              bash scripts/environment-checkpoint.sh
+            fi
             echo "### Container snapshot" >> "$GITHUB_STEP_SUMMARY"
-            echo "Saved: \`$ENV_IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "Saved image: $ENV_IMAGE" >> "$GITHUB_STEP_SUMMARY"
             docker rm -f deepseek-environment >/dev/null
           else
             echo "No running environment container to snapshot."
