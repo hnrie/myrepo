@@ -43,6 +43,51 @@ export function isAllowedBrowserOrigin(req, publicUrl) {
   }
 }
 
+const BOOT_COOKIE = 'dsh-proxy-boot';
+const BOOT_QUERY = '/?dsh-proxy-auth=1';
+
+function hasCookie(header, name) {
+  return String(header || '').split(';').some(item => item.trim().startsWith(name + '='));
+}
+
+function guardedHeaders() {
+  return {
+    'Cache-Control': 'no-store',
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Security-Policy': "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer'
+  };
+}
+
+function bootstrapPage(res) {
+  // First render an actual same-origin document, then navigate internally.
+  // Strict DSH cookies can be withheld throughout a cross-site redirect chain.
+  res.writeHead(200, {
+    ...guardedHeaders(),
+    'Set-Cookie': BOOT_COOKIE + '=1; Path=/; Max-Age=90; HttpOnly; Secure; SameSite=Lax'
+  });
+  res.end('<!doctype html><html><head><meta charset="utf-8">' +
+    '<meta http-equiv="refresh" content="0;url=/?dsh-proxy-auth=1">' +
+    '<title>Opening DeepSeek Harness</title></head><body>' +
+    '<p>Connecting to DeepSeek Harness...</p>' +
+    '<p><a href="/?dsh-proxy-auth=1">Continue to the coding agent</a></p>' +
+    '</body></html>');
+}
+
+function authFailed(res) {
+  // Fail closed instead of starting an endless sequence of 303 redirects.
+  res.writeHead(401, {
+    ...guardedHeaders(),
+    'Set-Cookie': BOOT_COOKIE + '=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax'
+  });
+  res.end('<!doctype html><html><head><title>DeepSeek Harness login failed</title></head>' +
+    '<body><h1>DeepSeek Harness session was not accepted</h1>' +
+    '<p>The browser refused or rejected the signed session cookie. ' +
+    'Open the site directly in a fresh tab and try again. If needed, clear ' +
+    'site cookies. The proxy stopped retrying to avoid a redirect loop.</p></body></html>');
+}
+
 export function startProxy({ password, getToken, getPublicUrl, port = 3081 }) {
   // Check browser context BEFORE translating Host/Origin to the backend's
   // loopback authority, preserving the upstream DSH CSRF fence.
@@ -61,37 +106,49 @@ export function startProxy({ password, getToken, getPublicUrl, port = 3081 }) {
       res.writeHead(503, { 'Cache-Control': 'no-store' });
       return res.end('DeepSeek Harness is starting. Refresh after it is ready.');
     }
+    const isRoot = req.method === 'GET' && req.url === '/';
+    const isExchange = req.method === 'GET' && req.url === BOOT_QUERY;
+    const hasBootAttempt = hasCookie(req.headers.cookie, BOOT_COOKIE);
+    const hasHarnessCookie = String(req.headers.cookie || '').includes('dsh-auth-');
+    if (req.method === 'GET' && req.url === '/index.html') {
+      res.writeHead(302, { Location: '/', 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+    if (isExchange && !hasBootAttempt) {
+      res.writeHead(403, { 'Cache-Control': 'no-store' });
+      return res.end('Authentication handshake requires the same-site entry page.');
+    }
+    if (isRoot && !hasHarnessCookie) {
+      return hasBootAttempt ? authFailed(res) : bootstrapPage(res);
+    }
+
     const headers = { ...req.headers };
     delete headers.authorization;
-    // npm latest currently has no --public-url. Its signed browser cookie is
-    // bound to the backend authority. Use loopback consistently for BOTH
-    // token exchange and subsequent HTTP/WebSocket requests.
+    // npm latest lacks --public-url. Keep DSH's Host-bound session audience
+    // fixed at loopback for token exchange, HTTP requests and WebSockets.
     headers.host = '127.0.0.1:3080';
     if (headers.origin) headers.origin = 'http://127.0.0.1:3080';
-    const isRoot = req.method === 'GET' && req.url === '/';
-    const hasSessionCookie = String(req.headers.cookie || '').includes('dsh-auth-');
-    const refresh = req.method === 'GET' && req.url === '/?refresh-session=1';
-    // Exchange the process token only when necessary. Always doing so on '/'
-    // would cause an endless redirect: DSH redirects the exchange back to '/'.
-    const path = refresh || (isRoot && !hasSessionCookie)
-      ? '/?token=' + encodeURIComponent(token)
-      : req.url;
+    // Only for a previously validated, safe top-level GET navigation.
+    if (isRoot && headers['sec-fetch-site'] === 'cross-site') {
+      headers['sec-fetch-site'] = 'same-origin';
+    }
+    const path = isExchange ? '/?token=' + encodeURIComponent(token) : req.url;
     const upstream = http.request({
       hostname: '127.0.0.1', port: 3080, path, method: req.method, headers
     }, response => {
-      // A browser may retain a cookie from a previous ephemeral runner.
-      // A new runner uses a new signature, so exchange a fresh token once.
-      if (isRoot && hasSessionCookie && response.statusCode === 401) {
+      if (isRoot && response.statusCode === 401) {
         response.resume();
-        res.writeHead(302, { Location: '/?refresh-session=1', 'Cache-Control': 'no-store' });
-        res.end();
-        return;
+        return hasBootAttempt ? authFailed(res) : bootstrapPage(res);
       }
       const outgoing = { ...response.headers, 'cache-control': 'no-store' };
       if (outgoing['set-cookie']) {
         outgoing['set-cookie'] = outgoing['set-cookie'].map(cookie =>
           /;\s*secure(?:;|$)/i.test(cookie) ? cookie : cookie + '; Secure'
         );
+      }
+      if (isRoot && response.statusCode === 200 && hasBootAttempt) {
+        const cookies = outgoing['set-cookie'] || [];
+        outgoing['set-cookie'] = [...cookies, BOOT_COOKIE + '=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax'];
       }
       res.writeHead(response.statusCode || 502, outgoing);
       response.pipe(res);
