@@ -24,35 +24,42 @@ other reasons, startup aborts rather than resetting the working environment.
 All user operations should happen INSIDE the DeepSeek Harness terminal or
 agent running inside the container, **not** on the temporary Avrea host.
 
-## Saving — only on stop or workflow cancellation
+## Saving — graceful Save & Stop or normal shutdown
 
-**There are no periodic backups or 20-minute checkpoints.** The runner saves
-the entire container writable filesystem to GHCR only when:
+**There are no periodic backups.** The runner saves its container filesystem
+to GHCR when the session duration expires, the launcher exits normally, or
+the finalizer is reached during GitHub's native Cancel workflow handling.
 
-- The selected session duration ends normally.
-- The agent exits or the launcher fails after the container is restored.
-- GitHub reaches the protected finalizer after **Cancel workflow** is clicked.
+For an early shutdown **with the best chance of saving data**, go to
+**Actions > Save and Stop DeepSeek Harness > Run workflow** on `main`.
+The active launcher polls GitHub for this workflow-dispatch request roughly
+every 15 seconds. It exits normally, allowing the existing finalizer to
+perform a single `docker commit --pause=true` and `docker push`, then
+remove the container after upload success. The request workflow itself does
+not save the image: watch the **original DeepSeek Harness Web Session run**
+for `BACKUP CONFIRMED: GHCR CHECKPOINT UPLOADED`.
 
-The workflow's harness job has `if: always()` and its final checkpoint step
-also has `if: always()`. This is based on GitHub's documented cancellation
-semantics: the finalizer remains eligible to run after a normal cancellation
-request. It calls `scripts/environment-checkpoint.sh` once, uses
-`docker commit --pause=true` and `docker push`, then removes the running
-container after a successful upload. The full writable layer contains
-uncommitted project edits, installed applications and DeepSeek chat data.
+The job-level condition is `if: ${{ !cancelled() }}`, allowing native
+**Cancel workflow** to interrupt the long-running step rather than keep the
+job running indefinitely. The finalizer retains step-level `if: always()`.
+GitHub may still terminate the job before an image finishes uploading,
+especially on large pushes or runner outages. Native cancellation is thus
+**best effort only**; prefer Save and Stop.
 
-**This is a best-effort cleanup, not a guaranteed transactional backup.**
-GitHub can forcibly stop jobs after cancellation, an Avrea VM can disappear,
-or an image push can fail or exceed a service limit. The GitHub **Cancel
-workflow** command still marks the run `cancelled`, and protected jobs may
-continue their current action before running cleanup; it is not necessarily
-immediate. A forced cancellation or host failure can leave changes unsaved.
+**Emergency Force Cancel Stuck Run** is available by manual dispatch with
+the numeric run ID. It bypasses the usual cancellation conditions and
+**does not guarantee any backup**. Only use it if you accept losing every
+container change since the previous successful checkpoint.
 
-You can confirm a successful backup only when the log shows
-`BACKUP CONFIRMED: GHCR CHECKPOINT UPLOADED`. If you do not see that, the
-previous successfully pushed `:current` image remains the available restore
-point. With **no periodic checkpoints**, a failed final save can lose the
-**entire session's** unsaved container changes.
+All these controls apply only to sessions launched from a version of the
+workflow containing the control code. Editing the repository cannot
+retroactively alter a running Actions job.
+
+A successful backup is confirmed only by
+`BACKUP CONFIRMED: GHCR CHECKPOINT UPLOADED` in the original run.
+If that message is absent, only the previous successfully pushed
+`:current` image should be relied on. With no periodic checkpoints,
+losing a final upload can lose the **entire current session's** work.
 
 ### Cancellation tested against GHCR
 
@@ -82,7 +89,7 @@ uses no volumes or bind mounts to maximize captured filesystem state.
    HARNESS_ACCESS_PASSWORD.
 6. Work inside the GUI. System packages, Python/Node installs, chat history,
    project files and uncommitted edits become part of the next image.
-7. Wait for the finalizer to log `BACKUP CONFIRMED` after normal shutdown or cancellation. Re-run to restore.
+7. For an early safe exit, dispatch **Save and Stop DeepSeek Harness** on main. Wait for `BACKUP CONFIRMED` in the original run before restarting.
 
 The container starts from the previous image even if its repository branch
 differs from current main. The host controller scripts always load from main.
