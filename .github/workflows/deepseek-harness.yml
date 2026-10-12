@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       session_minutes:
-        description: "Interactive session duration (10-330 minutes)"
+        description: "Interactive session duration (10-170 minutes; free allowance dependent)"
         required: true
         type: number
-        default: 330
+        default: 170
 
 permissions:
   contents: write
@@ -18,9 +18,20 @@ concurrency:
 
 jobs:
   harness:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 350
+    runs-on: avrea-ubuntu-latest-32-vcpu
+    timeout-minutes: 180
     steps:
+      - name: Enforce free-tier session duration
+        env:
+          SESSION_MINUTES: ${{ inputs.session_minutes }}
+        run: |
+          if ! [[ "$SESSION_MINUTES" =~ ^[0-9]+$ ]] || (( SESSION_MINUTES < 10 || SESSION_MINUTES > 170 )); then
+            echo "::error::Session must be 10-170 minutes to limit free-tier credit consumption"
+            exit 1
+          fi
+          echo "Avrea 32-vCPU runner: 170 session minutes + up to 10 setup/shutdown minutes"
+          echo "Credits must still be available; monthly free allowance is shared across jobs."
+
       - name: Checkout this project
         uses: actions/checkout@v4
         with:
