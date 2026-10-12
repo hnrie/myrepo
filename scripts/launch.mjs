@@ -1,156 +1,211 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startProxy } from './proxy.mjs';
 import { buildHarnessPatch } from './harness-config.mjs';
 
 const minutes = Number(process.env.SESSION_MINUTES || 330);
-const home = process.env.DSH_HOME;
-const key = process.env.CUSTOM_API_KEY;
+const interval = Number(process.env.SNAPSHOT_INTERVAL_MINUTES || 20);
 const password = process.env.HARNESS_ACCESS_PASSWORD;
 const identity = process.env.TUNNL_IDENTITY_FILE;
-// Agent edits run in a separate git worktree; the launcher always stays on main.
-const agentWorkspace = process.env.AGENT_WORKSPACE || process.cwd();
+const apiKey = process.env.CUSTOM_API_KEY;
+const image = process.env.ENV_IMAGE;
+const container = 'deepseek-environment';
 let webToken = '';
 let url = '';
 let harness;
 let tunnel;
-let closing = false;
+let stopping = false;
 let reconnects = 0;
+let snapshotPromise;
 
-if (!home || !key || !identity || !password) {
-  throw new Error('DSH_HOME, CUSTOM_API_KEY, HARNESS_ACCESS_PASSWORD and tunnel identity are required');
+if (!password || password.length < 16 || !identity || !apiKey || !image) {
+  throw new Error('Missing required Actions secrets or ENV_IMAGE. Password must be 16+ characters.');
 }
 if (!Number.isInteger(minutes) || minutes < 10 || minutes > 330) {
-  throw new Error('Session must be 10-330 minutes');
+  throw new Error('SESSION_MINUTES must be 10-330');
+}
+if (!Number.isInteger(interval) || interval < 5 || interval > 120) {
+  throw new Error('SNAPSHOT_INTERVAL_MINUTES must be 5-120');
 }
 
-// Use npm's latest dist-tag; the public tunnel URL is handled by the authenticated local proxy.
-// Harness loads this override after its bundled Web profile.
-// The API key is read from the environment; it is never stored in the repo.
-const patch = buildHarnessPatch();
-// Let the npm CLI initialize the stock Web profile itself. The home-level
-// override is applied afterward and does not prevent profile initialization.
-mkdirSync(home, { recursive: true, mode: 0o700 });
-writeFileSync(join(home, 'cordis.patch.yml'), patch, { mode: 0o600 });
+const temp = mkdtempSync(join(tmpdir(), 'dsh-container-start-'));
+const patchFile = join(temp, 'cordis.patch.yml');
+writeFileSync(patchFile, buildHarnessPatch(), { mode: 0o600 });
+try {
+  // Only nonsecret model metadata is copied. Never docker cp SSH keys, web
+  // passwords or the API key into the snapshotable container filesystem.
+  execFileSync('docker', ['cp', patchFile, container + ':/state/dsh/cordis.patch.yml'], {
+    timeout: 30000, stdio: 'pipe'
+  });
+} finally {
+  rmSync(temp, { recursive: true, force: true });
+}
 
-const server = startProxy({ password, getToken: () => webToken, getPublicUrl: () => url });
-function captureLines(stream, fn) {
-  let buf = '';
-  stream.on('data', bytes => {
-    buf += bytes.toString('utf8');
-    const parts = buf.split(/\r?\n/);
-    buf = parts.pop() || '';
-    for (const line of parts) fn(line);
-    if (buf.length > 20000) buf = buf.slice(-1000);
+const proxy = startProxy({ password, getToken: () => webToken, getPublicUrl: () => url });
+
+function lines(stream, handler) {
+  let pending = '';
+  stream.on('data', chunk => {
+    pending += chunk.toString('utf8');
+    const all = pending.split(/\r?\n/);
+    pending = all.pop() || '';
+    for (const entry of all) handler(entry);
+    if (pending.length > 30000) pending = pending.slice(-2000);
   });
 }
-function clean(line) {
-  return line.replaceAll(key, '[REDACTED]')
+function safe(line) {
+  // Model secrets and transient one-time browser tokens cannot appear in CI logs.
+  return line.replaceAll(apiKey, '[REDACTED]')
     .replaceAll(password, '[REDACTED]')
-    .replace(/([?&]token=)[^&\s]+/gi, '$1[REDACTED]');
+    .replace(/([?&]token=)[^&\s]+/gi, '$1[REDACTED]').slice(0, 1200);
 }
-function gitSync() {
+function runCommand(program, argv, environment = process.env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(program, argv, { env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
+    lines(child.stdout, line => { if (line) console.log(safe(line)); });
+    lines(child.stderr, line => { if (line) console.error(safe(line)); });
+    child.on('error', reject);
+    child.on('exit', code => code === 0 ? resolve() : reject(new Error(program + ' exited ' + code)));
+  });
+}
+
+async function saveSnapshot() {
+  if (snapshotPromise) return snapshotPromise;
+  snapshotPromise = runCommand('bash', ['scripts/environment-checkpoint.sh'])
+    .then(() => console.log('Environment snapshot uploaded; uncommitted /workspace and installed apps preserved.'))
+    .catch(error => {
+      console.error('SNAPSHOT FAILED: ' + error.message);
+      throw error;
+    })
+    .finally(() => { snapshotPromise = undefined; });
+  return snapshotPromise;
+}
+
+const timer = setInterval(() => {
+  void saveSnapshot().catch(() => {
+    console.error('Snapshot upload failed; prior GHCR image remains the restore point.');
+  });
+}, interval * 60_000);
+
+async function stop(exitCode = 0) {
+  if (stopping) return;
+  stopping = true;
+  clearInterval(timer);
+  console.log('Ending interactive session. Saving entire container writable filesystem...');
   try {
-    // Push COMMITTED work only. Never stage or auto-publish unknown files to
-    // a PUBLIC repository: doing so could expose files generated by an agent.
-    execFileSync('git', ['push', 'origin', 'HEAD:refs/heads/agent/workspace'], {
-      cwd: agentWorkspace, timeout: 30000, stdio: 'ignore'
-    });
+    await saveSnapshot();
   } catch {
-    console.warn('Committed changes could not be synced; check repository permissions.');
+    exitCode = 1;
+    console.error('Final snapshot failed. Previous successful GHCR checkpoint remains available.');
+  } finally {
+    harness?.kill('SIGTERM');
+    tunnel?.kill('SIGTERM');
+    proxy.close();
+    process.exitCode = exitCode;
+    // Allow the Docker CLI and SSH to release process handles, then finish.
+    setTimeout(() => process.exit(process.exitCode), 5000).unref();
   }
 }
-const pushInterval = setInterval(gitSync, 90000);
-function stop(code = 0) {
-  if (closing) return;
-  closing = true;
-  clearInterval(pushInterval);
-  gitSync();
-  harness?.kill('SIGTERM');
-  tunnel?.kill('SIGTERM');
-  server.close();
-  setTimeout(() => process.exit(code), 7000).unref();
-}
-process.on('SIGINT', () => stop());
-process.on('SIGTERM', () => stop());
-setTimeout(() => stop(), minutes * 60_000);
 
-function launchHarness(publicUrl) {
-  if (harness) return;
-  console.log('Web UI will be available at ' + publicUrl + ' after start-up.');
-  harness = spawn('npx', [
-    '--yes', '@deepseek-ai/dsh@latest', 'web', '--no-open', '--port', '3080'
-  ], {
-    cwd: agentWorkspace,
-    env: { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-  function onOutput(line) {
+process.on('SIGINT', () => { void stop(1); });
+process.on('SIGTERM', () => { void stop(1); });
+setTimeout(() => { void stop(); }, minutes * 60_000);
+
+// Runtime package installation occurs INSIDE the persistent container, so
+// the installed npm package will be present after the next successful commit.
+console.log('Updating DeepSeek Harness npm latest inside persistent container...');
+try {
+  await runCommand('docker', ['exec', container, 'npm', 'install', '-g', '@deepseek-ai/dsh@latest']);
+  await runCommand('docker', ['exec', container, 'dsh', 'web', '--help']);
+} catch (error) {
+  console.error('Failed to install DeepSeek Harness inside the container:', error.message);
+  await stop(1);
+}
+
+function startHarness(publicUrl) {
+  if (harness || stopping) return;
+  console.log('Launching persisted DeepSeek Harness at ' + publicUrl);
+  // 'docker exec -e NAME' imports NAME from the docker CLI environment at
+  // execution time. Unlike docker run -e VALUE, it never stores the API key
+  // in the container/image Config.Env committed to GHCR.
+  harness = spawn('docker', [
+    'exec', '-i', '-e', 'CUSTOM_API_KEY',
+    '-e', 'DSH_HOME=/state/dsh',
+    '-e', 'DSH_TELEMETRY_DISABLED=1',
+    '-w', '/workspace', container,
+    'dsh', 'web', '--no-open', '--port', '3080'
+  ], { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  function output(line) {
     const match = line.match(/dsh web:\s+(https?:\/\/[^\s]+)/);
     if (match) {
       try {
         const token = new URL(match[1]).searchParams.get('token');
         if (token) {
           webToken = token;
-          console.log('Harness ready; launch credential hidden from workflow logs.');
+          console.log('Harness ready; Web bootstrap credential hidden from logs.');
           return;
         }
       } catch {}
     }
-    if (line) console.log(clean(line).slice(0, 1400));
+    if (line) console.log(safe(line));
   }
-  captureLines(harness.stdout, onOutput);
-  captureLines(harness.stderr, onOutput);
-  harness.once('error', err => { console.error('Harness failed: ' + err.message); stop(1); });
+  lines(harness.stdout, output);
+  lines(harness.stderr, output);
+  harness.once('error', error => {
+    console.error('Containerized Harness process error: ' + error.message);
+    void stop(1);
+  });
   harness.once('exit', code => {
-    if (!closing) {
-      console.error('Harness exited unexpectedly: ' + code);
-      stop(1);
+    if (!stopping) {
+      console.error('Containerized Harness exited unexpectedly: ' + code);
+      void stop(1);
     }
   });
 }
 
-function launchTunnel() {
-  if (closing) return;
+function startTunnel() {
+  if (stopping) return;
   tunnel = spawn('ssh', [
-    '-n', '-T', '-i', identity,
-    '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
-    '-o', 'StrictHostKeyChecking=accept-new',
+    '-n', '-T', '-i', identity, '-o', 'IdentitiesOnly=yes',
+    '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new',
     '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3',
     '-o', 'ExitOnForwardFailure=yes',
     '-R', '80:localhost:3081', 'stable@proxy.tunnl.gg', 'output=json'
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
-  function onLine(line) {
+  function read(line) {
+    let event;
+    try { event = JSON.parse(line); } catch { return; }
+    if (event?.event !== 'tunnel' || typeof event.url !== 'string') return;
     try {
-      const event = JSON.parse(line);
-      if (event.event !== 'tunnel' || typeof event.url !== 'string') return;
       const address = new URL(event.url);
       if (address.protocol !== 'https:' || !address.hostname.endsWith('.tunnl.gg')) {
-        throw new Error('Unexpected tunnel URL');
+        throw new Error('Unexpected tunnel address');
       }
-      if (url && url !== address.origin) throw new Error('Stable tunnel hostname changed');
+      if (url && url !== address.origin) throw new Error('Stable hostname unexpectedly changed');
       url = address.origin;
-      console.log('Stable tunnl.gg URL: ' + url + ' (password protected)');
-      launchHarness(url);
+      console.log('Stable tunnl.gg URL: ' + url);
+      startHarness(url);
     } catch (error) {
-      if (error instanceof SyntaxError) return; // Ignore ssh diagnostics/request JSON.
-      console.error('Tunnel validation failed: ' + error.message);
-      stop(1);
+      console.error('Tunnel verification failure: ' + error.message);
+      void stop(1);
     }
   }
-  captureLines(tunnel.stdout, onLine);
-  captureLines(tunnel.stderr, onLine);
-  tunnel.once('error', error => { console.error('SSH startup error: ' + error.message); stop(1); });
+  lines(tunnel.stdout, read);
+  lines(tunnel.stderr, read);
+  tunnel.once('error', error => {
+    console.error('SSH tunnel error: ' + error.message);
+    void stop(1);
+  });
   tunnel.once('exit', code => {
-    if (closing) return;
+    if (stopping) return;
     if (++reconnects > 5) {
-      console.error('tunnl.gg disconnected repeatedly; ending this job.');
-      return stop(1);
+      console.error('Tunnel disconnected repeatedly; keeping last successful snapshot.');
+      return void stop(1);
     }
-    console.warn('tunnl.gg SSH disconnected (' + code + '). Reconnecting using the same key.');
-    setTimeout(launchTunnel, 3000).unref();
+    console.warn('tunnl.gg disconnected with code ' + code + '; reconnecting with original key.');
+    setTimeout(startTunnel, 3000).unref();
   });
 }
-
-launchTunnel();
+if (!stopping) startTunnel();
