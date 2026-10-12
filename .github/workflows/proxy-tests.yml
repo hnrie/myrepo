@@ -1,0 +1,32 @@
+name: Proxy Login Regression Tests
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/proxy.mjs'
+      - 'scripts/proxy.test.mjs'
+      - 'scripts/proxy.integration.test.mjs'
+      - '.github/workflows/proxy-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check JavaScript syntax
+        run: |
+          node --check scripts/proxy.mjs
+          node --check scripts/proxy.test.mjs
+          node --check scripts/proxy.integration.test.mjs
+      - name: Run mocked DeepSeek authentication and WebSocket security tests
+        run: node --test scripts/proxy.test.mjs scripts/proxy.integration.test.mjs
