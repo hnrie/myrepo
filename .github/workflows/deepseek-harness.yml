@@ -53,18 +53,31 @@ jobs:
           }
           echo "DeepSeek Harness npm latest Web CLI is compatible with the loopback proxy."
 
-      - name: Restore work branch
+      - name: Prepare separate persistent code worktree
         shell: bash
         run: |
           set -euo pipefail
+          # Keep scripts/launch.mjs and scripts/proxy.mjs on this checkout of
+          # main. Never switch the runtime checkout to a stale work branch.
+          git fetch origin main
+          workspace="$RUNNER_TEMP/agent-workspace"
           if git ls-remote --exit-code --heads origin agent/workspace >/dev/null; then
             git fetch origin agent/workspace
-            git switch -C agent/workspace FETCH_HEAD
+            git worktree add -B agent/workspace "$workspace" origin/agent/workspace
           else
-            git switch -c agent/workspace
+            git worktree add -b agent/workspace "$workspace" HEAD
           fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C "$workspace" config user.name 'github-actions[bot]'
+          git -C "$workspace" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          echo "AGENT_WORKSPACE=$workspace" >> "$GITHUB_ENV"
+          test "$(git branch --show-current)" = main
+          grep -Fq -- '@deepseek-ai/dsh@latest' scripts/launch.mjs
+          if grep -Fq -- "'--public-url'" scripts/launch.mjs; then
+            echo "::error::Unexpected old launch argument in the main runtime"
+            exit 1
+          fi
+          echo "Runtime scripts: $(git rev-parse --short HEAD) (main)"
+          echo "Agent work branch: $(git -C "$workspace" rev-parse --short HEAD)"
           df -h /
 
       - name: Prepare stable tunnl.gg SSH identity
