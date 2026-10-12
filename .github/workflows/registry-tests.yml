@@ -1,0 +1,57 @@
+name: GHCR Remote Snapshot Restore Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/registry-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deepseek-harness-session
+  cancel-in-progress: false
+
+jobs:
+  registry-roundtrip:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push and restore synthetic state through the real registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-environment:registry-smoke"
+          docker build -f Dockerfile.environment -t "$image" .
+          docker run -d --name registry-test "$image" sleep infinity
+          docker exec registry-test sh -ec '
+            mkdir -p /workspace /state/dsh /root
+            echo "synthetic-uncommitted-data" > /workspace/test.txt
+            echo "synthetic-history" > /state/dsh/history.txt
+            printf "#!/bin/sh\necho installed-ok\n" > /usr/local/bin/synthetic-app
+            chmod 755 /usr/local/bin/synthetic-app
+          '
+          docker commit registry-test "$image" >/dev/null
+          docker rm -f registry-test >/dev/null
+          docker push "$image"
+          docker image rm "$image" >/dev/null
+          docker pull "$image"
+          docker run -d --name registry-restored "$image" sleep infinity
+          docker exec registry-restored sh -ec '
+            test "$(cat /workspace/test.txt)" = "synthetic-uncommitted-data"
+            test "$(cat /state/dsh/history.txt)" = "synthetic-history"
+            test "$(synthetic-app)" = "installed-ok"
+          '
+          docker rm -f registry-restored >/dev/null
+          echo "REMOTE GHCR SNAPSHOT PASS: pushed, pulled and restored complete Ubuntu container filesystem."
+          echo "This uses the registry-smoke tag only; user environment :current is untouched."
