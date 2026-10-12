@@ -9,6 +9,9 @@ on:
       - 'scripts/proxy.test.mjs'
       - 'scripts/proxy.integration.test.mjs'
       - 'scripts/proxy.browser.test.mjs'
+      - 'scripts/harness-config.mjs'
+      - 'scripts/harness-smoke.test.mjs'
+      - 'scripts/launch.mjs'
       - '.github/workflows/proxy-tests.yml'
   workflow_dispatch:
 
@@ -29,9 +32,14 @@ jobs:
           node --check scripts/proxy.mjs
           node --check scripts/proxy.test.mjs
           node --check scripts/proxy.integration.test.mjs
+          node --check scripts/harness-config.mjs
+          node --check scripts/harness-smoke.test.mjs
+          node --check scripts/launch.mjs
       - name: Run mocked DeepSeek authentication and WebSocket security tests
         run: node --test scripts/proxy.test.mjs scripts/proxy.integration.test.mjs
       - name: Install browser test driver (no bundled browser download)
         run: npm install --no-save --no-package-lock --ignore-scripts playwright-core
       - name: Run real Chromium cross-origin authentication smoke test
         run: node scripts/proxy.browser.test.mjs
+      - name: Start actual npm latest DeepSeek Harness with dummy API key
+        run: node scripts/harness-smoke.test.mjs
