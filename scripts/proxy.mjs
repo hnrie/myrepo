@@ -18,12 +18,29 @@ function unauthorized(res) {
   res.end('Sign in with username agent and your configured password.');
 }
 
-export function startProxy({ password, getToken, port = 3081 }) {
+export function startProxy({ password, getToken, getPublicUrl, port = 3081 }) {
+  // Reject cross-site browser requests BEFORE mapping the upstream authority
+  // to localhost. Otherwise rewriting Origin would weaken DSH's CSRF fence.
+  function isAllowedBrowserOrigin(req) {
+    if (req.headers['sec-fetch-site'] === 'cross-site') return false;
+    const origin = req.headers.origin;
+    if (origin === undefined) return true;
+    try {
+      const publicUrl = getPublicUrl();
+      return !!publicUrl && new URL(origin).origin === new URL(publicUrl).origin;
+    } catch {
+      return false;
+    }
+  }
   if (!password || password.length < 16) {
     throw new Error('HARNESS_ACCESS_PASSWORD must be at least 16 characters.');
   }
   const server = http.createServer((req, res) => {
     if (!checkPassword(req.headers.authorization, password)) return unauthorized(res);
+    if (!isAllowedBrowserOrigin(req)) {
+      res.writeHead(403, { 'Cache-Control': 'no-store' });
+      return res.end('Cross-origin requests are not permitted.');
+    }
     const token = getToken();
     if (!token) {
       res.writeHead(503, { 'Cache-Control': 'no-store' });
@@ -31,6 +48,11 @@ export function startProxy({ password, getToken, port = 3081 }) {
     }
     const headers = { ...req.headers };
     delete headers.authorization;
+    // npm latest currently has no --public-url. Its signed browser cookie is
+    // bound to the backend authority. Use loopback consistently for BOTH
+    // token exchange and subsequent HTTP/WebSocket requests.
+    headers.host = '127.0.0.1:3080';
+    if (headers.origin) headers.origin = 'http://127.0.0.1:3080';
     const isRoot = req.method === 'GET' && req.url === '/';
     const hasSessionCookie = String(req.headers.cookie || '').includes('dsh-auth-');
     const refresh = req.method === 'GET' && req.url === '/?refresh-session=1';
@@ -70,10 +92,16 @@ export function startProxy({ password, getToken, port = 3081 }) {
   // DSH itself requires its signed browser-session cookie for EVERY WebSocket
   // request; only the password-gated HTTP root can mint that cookie.
   server.on('upgrade', (req, socket, head) => {
+    if (!isAllowedBrowserOrigin(req)) {
+      socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
     const upstream = net.connect(3080, '127.0.0.1');
     upstream.once('connect', () => {
       const headers = { ...req.headers };
       delete headers.authorization;
+      headers.host = '127.0.0.1:3080';
+      if (headers.origin) headers.origin = 'http://127.0.0.1:3080';
       const pairs = Object.entries(headers).flatMap(([name, value]) =>
         (Array.isArray(value) ? value : [value]).map(item => name + ': ' + item)
       );
