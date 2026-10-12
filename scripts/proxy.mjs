@@ -31,12 +31,25 @@ export function startProxy({ password, getToken, port = 3081 }) {
     }
     const headers = { ...req.headers };
     delete headers.authorization;
-    const path = req.method === 'GET' && req.url === '/'
+    const isRoot = req.method === 'GET' && req.url === '/';
+    const hasSessionCookie = /(?:^|;\\s*)dsh-auth-[^=]+=/.test(req.headers.cookie || '');
+    const refresh = req.method === 'GET' && req.url === '/?refresh-session=1';
+    // Exchange the process token only when necessary. Always doing so on '/'
+    // would cause an endless redirect: DSH redirects the exchange back to '/'.
+    const path = refresh || (isRoot && !hasSessionCookie)
       ? '/?token=' + encodeURIComponent(token)
       : req.url;
     const upstream = http.request({
       hostname: '127.0.0.1', port: 3080, path, method: req.method, headers
     }, response => {
+      // A browser may retain a cookie from a previous ephemeral runner.
+      // A new runner uses a new signature, so exchange a fresh token once.
+      if (isRoot && hasSessionCookie && response.statusCode === 401) {
+        response.resume();
+        res.writeHead(302, { Location: '/?refresh-session=1', 'Cache-Control': 'no-store' });
+        res.end();
+        return;
+      }
       const outgoing = { ...response.headers, 'cache-control': 'no-store' };
       if (outgoing['set-cookie']) {
         outgoing['set-cookie'] = outgoing['set-cookie'].map(cookie =>
