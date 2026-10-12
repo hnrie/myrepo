@@ -95,7 +95,13 @@ async function stop(exitCode = 0) {
   clearInterval(timer);
   console.log('Ending interactive session. Saving entire container writable filesystem...');
   try {
+    // If a periodic upload was in progress, wait for it, then take a fresh
+    // snapshot to capture changes made during that upload.
+    if (snapshotPromise) await snapshotPromise;
     await saveSnapshot();
+    if (process.env.RUNNER_TEMP) {
+      writeFileSync(join(process.env.RUNNER_TEMP, 'environment-final-saved.ok'), 'saved\n');
+    }
   } catch {
     exitCode = 1;
     console.error('Final snapshot failed. Previous successful GHCR checkpoint remains available.');
