@@ -109,9 +109,9 @@ jobs:
           set -euo pipefail
           echo "SESSION SHUTDOWN: preparing single GHCR filesystem checkpoint"
           if docker ps --format '{{.Names}}' | grep -Fxq deepseek-environment; then
-            # Stop the agent process to flush session data before snapshot.
-            # The container's sleep PID 1 stays alive so docker commit works.
-            docker exec deepseek-environment sh -c               'pkill -TERM -f "dsh web" 2>/dev/null || true' || true
+            # Flush disk buffers. Docker commit --pause will snapshot the
+            # whole writable layer without terminating user-installed apps.
+            docker exec deepseek-environment sync
             echo "Saving complete unmounted container filesystem to GHCR..."
             if bash scripts/environment-checkpoint.sh; then
               echo "BACKUP CONFIRMED: GHCR CHECKPOINT UPLOADED"
