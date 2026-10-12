@@ -35,6 +35,9 @@ jobs:
           node --check scripts/launch.mjs
           node --check scripts/proxy.mjs
 
+      - name: Test proxy cross-origin protection
+        run: node --test scripts/proxy.test.mjs
+
       - name: Verify npm latest DeepSeek Harness Web CLI
         env:
           DSH_HOME: ${{ runner.temp }}/deepseek-harness-home
