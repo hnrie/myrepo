@@ -11,6 +11,7 @@ on:
       - 'scripts/proxy.browser.test.mjs'
       - 'scripts/harness-config.mjs'
       - 'scripts/harness-smoke.test.mjs'
+      - 'scripts/harness-web-e2e.test.mjs'
       - 'scripts/launch.mjs'
       - '.github/workflows/proxy-tests.yml'
   workflow_dispatch:
@@ -34,6 +35,7 @@ jobs:
           node --check scripts/proxy.integration.test.mjs
           node --check scripts/harness-config.mjs
           node --check scripts/harness-smoke.test.mjs
+          node --check scripts/harness-web-e2e.test.mjs
           node --check scripts/launch.mjs
       - name: Run mocked DeepSeek authentication and WebSocket security tests
         run: node --test scripts/proxy.test.mjs scripts/proxy.integration.test.mjs
@@ -43,3 +45,5 @@ jobs:
         run: node scripts/proxy.browser.test.mjs
       - name: Start actual npm latest DeepSeek Harness with dummy API key
         run: node scripts/harness-smoke.test.mjs
+      - name: Chromium test against real DeepSeek Harness behind TLS proxy
+        run: node scripts/harness-web-e2e.test.mjs
