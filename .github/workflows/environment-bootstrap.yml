@@ -49,3 +49,17 @@ jobs:
           docker build -f Dockerfile.environment -t "$image" .
           docker push "$image"
           echo "PRISTINE GHCR BASE READY: $image"
+      - name: Prove Avrea restore script can rehydrate GHCR image and project
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ENV_IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}-environment:current"
+          bash scripts/environment-restore.sh
+          docker exec deepseek-environment sh -ec '
+            test -d /workspace/.git
+            test -d /state/dsh
+            node --version
+            npm --version
+          '
+          docker rm -f deepseek-environment >/dev/null
+          echo "REAL GHCR RESTORE SCRIPT PASS: current image pulled and project cloned."
