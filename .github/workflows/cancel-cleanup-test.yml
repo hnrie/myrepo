@@ -36,7 +36,8 @@ jobs:
             gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel"
           ) &
           echo "MONITOR LONG-RUNNING ACTION BEGIN"
-          sleep 55
+          sleep 12
+          echo "POST-CANCEL RUN STATUS: $(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.status+":"+(.conclusion//"null")')"
           echo "MONITOR LONG-RUNNING ACTION END"
 
       - name: Save data after normal Cancel workflow request
