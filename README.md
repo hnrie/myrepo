@@ -77,6 +77,34 @@ stop each session after the selected duration (10–330 minutes). Avrea and
 GitHub can impose independent job limits and usage charges. There is no
 zero-cost promise for uninterrupted hosting.
 
+## Verified browser login regression fix (2026-10-12)
+
+The proxy serves a first-party HTML handoff before exchanging the Harness
+startup token. This ensures its `SameSite=Strict` session cookie is usable
+after navigating from another site. Authentication failures show a bounded
+error response instead of looping endlessly. The original signed cookie
+is not downgraded to `SameSite=Lax`; only a short-lived handshake marker uses
+Lax, and API/WS cross-origin requests remain blocked.
+
+The public <https://github.com/hnrie/myrepo/actions/runs/38211404426>
+passed **all** of the following on a GitHub-hosted Ubuntu runner:
+
+- 8 proxy HTTP and security checks.
+- Real Chromium cross-origin redirect and authenticated API smoke test.
+- Actual npm `latest` DeepSeek Harness start with the shared Muse Spark
+  `xhigh` provider configuration (using a dummy API key).
+- Real Chromium navigation to that same Harness Web UI behind the HTTPS
+  password proxy, including authenticated API access.
+
+To use the fix, **stop any older running DeepSeek workflow and start a new
+run on `main`**. Running jobs retain files from the commit they checked out
+and cannot pick up these changes by refreshing the browser. The stable tunnel
+hostname should remain unchanged when using the same SSH key.
+
+The test does **not** call the private inference endpoint or deploy through
+the real external tunnl.gg network; verify those separately during a new
+Avrea run. Session lifetime and free-credit limitations remain.
+
 ## Browser cross-origin handling
 
 You can open the tunnl.gg URL from another website or by pasting it into the
