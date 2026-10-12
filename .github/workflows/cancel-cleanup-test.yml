@@ -1,4 +1,4 @@
-name: GitHub Cancel Cleanup Probe
+name: GitHub Cancel -> GHCR Snapshot Integration Test
 
 on:
   push:
@@ -10,43 +10,49 @@ on:
 permissions:
   contents: read
   actions: write
+  packages: write
 
 jobs:
   cleanup-test:
+    if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 6
+    env:
+      ENV_IMAGE: ghcr.io/${{ github.repository }}-environment:cancel-snapshot-test
     steps:
-      - name: Prepare synthetic persisted state
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare synthetic unsaved Docker state
         run: |
           set -euo pipefail
-          docker run -d --name cancel-check alpine:3.20 sleep 300
-          docker exec cancel-check sh -c 'echo before-cancel > /root/unsaved.txt'
-          echo "Synthetic uncommitted state exists."
-
-      - name: Simulate a user pressing Cancel workflow
-        if: ${{ !cancelled() }}
+          docker run -d --name deepseek-environment alpine:3.20 sleep 300
+          docker exec deepseek-environment sh -c 'echo saved-after-cancel > /root/unsaved.txt'
+          echo "Test data written but not committed."
+      - name: Simulate user Cancel workflow request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           (
-            sleep 5
-            echo "REQUESTING REGULAR GITHUB WORKFLOW CANCELLATION"
-            gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel"
+            sleep 4
+            echo "ISSUING REAL GITHUB WORKFLOW CANCEL REQUEST"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null
           ) &
-          echo "MONITOR LONG-RUNNING ACTION BEGIN"
           sleep 12
-          echo "POST-CANCEL RUN STATUS: $(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.status+":"+(.conclusion//"null")')"
-          echo "MONITOR LONG-RUNNING ACTION END"
-
-      - name: Save data after normal Cancel workflow request
+          echo "Cancel request submitted; preparing protected GHCR cleanup."
+      - name: Protected GHCR backup and restore after Cancel
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          echo "CANCEL CLEANUP STEP STARTED"
-          docker commit cancel-check cancel-checkpoint:latest
-          docker rm -f cancel-check
-          docker run --rm cancel-checkpoint:latest sh -c 'test "$(cat /root/unsaved.txt)" = "before-cancel"'
-          echo "CANCEL SNAPSHOT RESTORE PASSED"
+          echo "CANCEL CLEANUP: STARTING REAL GHCR PUSH"
+          bash scripts/environment-checkpoint.sh
+          docker rm -f deepseek-environment
+          docker image rm "$ENV_IMAGE"
+          docker pull "$ENV_IMAGE"
+          docker run --rm "$ENV_IMAGE" sh -c 'test "$(cat /root/unsaved.txt)" = "saved-after-cancel"'
+          echo "CANCEL GHCR BACKUP AND REMOTE RESTORE PASSED"
