@@ -67,7 +67,7 @@ the authority for your uncommitted work.
 ## Security: read this before storing anything private
 
 GHCR new packages are PRIVATE by default, but verify
-github.com/users/hnrie/packages/container/myrepo-environment/settings and
+your GitHub profile > Packages > myrepo-environment > Package settings and
 keep the package PRIVATE. Your underlying source repository is public.
 A Docker snapshot can include chat messages, project files, credentials
 entered into terminals, browser authentication signing keys and other data.
@@ -111,5 +111,14 @@ Ubuntu image, installs a synthetic program, writes uncommitted files in
 deletes it, and restores from the snapshot. The tests also verify a temporary
 injected API key did not enter the saved image's Config.Env.
 
-This test does not guarantee GHCR connectivity or quotas: the first Avrea run
-must still successfully push a real checkpoint to the registry.
+These tests have additionally been run against GHCR itself. The `registry-smoke`
+tag was pushed, removed locally, pulled back and verified successfully:
+https://github.com/hnrie/myrepo/actions/runs/38232530099
+
+The clean `:current` image was then initialized without touching any user
+snapshot and successfully pulled by the production restore script, which
+also cloned the agent workspace in a fresh container:
+https://github.com/hnrie/myrepo/actions/runs/38233159198
+
+The first Avrea job still has to complete its own live checkpoint upload.
+Large files, external services, and Avrea limits can cause failures.
