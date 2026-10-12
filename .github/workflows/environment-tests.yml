@@ -1,0 +1,32 @@
+name: Persistent Environment Snapshot Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile.environment
+      - .dockerignore
+      - scripts/environment-restore.sh
+      - scripts/environment-checkpoint.sh
+      - scripts/environment-verify.sh
+      - scripts/launch.mjs
+      - .github/workflows/environment-tests.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot-roundtrip:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check runner scripts
+        run: |
+          bash -n scripts/environment-restore.sh
+          bash -n scripts/environment-checkpoint.sh
+          bash -n scripts/environment-verify.sh
+          node --check scripts/launch.mjs
+      - name: Build Ubuntu environment and verify full filesystem restore
+        run: bash scripts/environment-verify.sh
