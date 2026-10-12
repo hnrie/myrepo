@@ -32,7 +32,7 @@ export function startProxy({ password, getToken, port = 3081 }) {
     const headers = { ...req.headers };
     delete headers.authorization;
     const isRoot = req.method === 'GET' && req.url === '/';
-    const hasSessionCookie = /(?:^|;\\s*)dsh-auth-[^=]+=/.test(req.headers.cookie || '');
+    const hasSessionCookie = String(req.headers.cookie || '').includes('dsh-auth-');
     const refresh = req.method === 'GET' && req.url === '/?refresh-session=1';
     // Exchange the process token only when necessary. Always doing so on '/'
     // would cause an endless redirect: DSH redirects the exchange back to '/'.
