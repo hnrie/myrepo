@@ -10,7 +10,8 @@ on:
         default: 330
 
 permissions:
-  contents: write
+  contents: read
+  packages: write
 
 concurrency:
   group: deepseek-harness-session
@@ -20,68 +21,39 @@ jobs:
   harness:
     runs-on: avrea-ubuntu-latest-32-vcpu
     steps:
-      - name: Checkout repository
+      - name: Checkout current environment controller
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Use Node.js 22
+      - name: Set up Node.js 22 for the host proxy
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Validate launcher source syntax
+      - name: Validate runtime and authentication tests
         run: |
           node --check scripts/launch.mjs
+          node --check scripts/harness-config.mjs
           node --check scripts/proxy.mjs
+          bash -n scripts/environment-restore.sh
+          bash -n scripts/environment-checkpoint.sh
+          node --test scripts/proxy.test.mjs scripts/proxy.integration.test.mjs
 
-      - name: Test proxy authentication and origin security
-        run: node --test scripts/proxy.test.mjs scripts/proxy.integration.test.mjs
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify npm latest DeepSeek Harness Web CLI
-        env:
-          DSH_HOME: ${{ runner.temp }}/deepseek-harness-home
+      - name: Choose persistent Docker image
         shell: bash
         run: |
           set -euo pipefail
-          echo "npm latest release: $(npm view @deepseek-ai/dsh dist-tags.latest)"
-          npx --yes @deepseek-ai/dsh@latest web --help > "$RUNNER_TEMP/dsh-web-help.txt"
-          grep -Fq -- '--no-open' "$RUNNER_TEMP/dsh-web-help.txt" || {
-            echo "::error::DeepSeek Harness latest lacks --no-open"
-            exit 1
-          }
-          grep -Fq -- '--port' "$RUNNER_TEMP/dsh-web-help.txt" || {
-            echo "::error::DeepSeek Harness latest lacks --port"
-            exit 1
-          }
-          echo "DeepSeek Harness npm latest Web CLI is compatible with the loopback proxy."
+          echo "ENV_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}-environment:current" >> "$GITHUB_ENV"
+          echo "Persistent Docker image: ghcr.io/${GITHUB_REPOSITORY,,}-environment:current"
 
-      - name: Prepare separate persistent code worktree
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Keep scripts/launch.mjs and scripts/proxy.mjs on this checkout of
-          # main. Never switch the runtime checkout to a stale work branch.
-          git fetch origin main
-          workspace="$RUNNER_TEMP/agent-workspace"
-          if git ls-remote --exit-code --heads origin agent/workspace >/dev/null; then
-            git fetch origin agent/workspace
-            git worktree add -B agent/workspace "$workspace" origin/agent/workspace
-          else
-            git worktree add -b agent/workspace "$workspace" HEAD
-          fi
-          git -C "$workspace" config user.name 'github-actions[bot]'
-          git -C "$workspace" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          echo "AGENT_WORKSPACE=$workspace" >> "$GITHUB_ENV"
-          test "$(git branch --show-current)" = main
-          grep -Fq -- '@deepseek-ai/dsh@latest' scripts/launch.mjs
-          if grep -Fq -- "'--public-url'" scripts/launch.mjs; then
-            echo "::error::Unexpected old launch argument in the main runtime"
-            exit 1
-          fi
-          echo "Runtime scripts: $(git rev-parse --short HEAD) (main)"
-          echo "Agent work branch: $(git -C "$workspace" rev-parse --short HEAD)"
-          df -h /
+      - name: Restore complete container filesystem from GHCR
+        run: bash scripts/environment-restore.sh
 
       - name: Prepare stable tunnl.gg SSH identity
         env:
@@ -97,30 +69,46 @@ jobs:
           mkdir -p "$RUNNER_TEMP/tunnl"
           printf '%s\n' "$TUNNL_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/tunnl/id_ed25519"
           chmod 600 "$RUNNER_TEMP/tunnl/id_ed25519"
-          ssh-keygen -y -P '' -f "$RUNNER_TEMP/tunnl/id_ed25519" > /dev/null || {
-            echo "::error::TUNNL_SSH_PRIVATE_KEY must be a valid unencrypted SSH private key"
-            exit 1
-          }
+          ssh-keygen -y -P '' -f "$RUNNER_TEMP/tunnl/id_ed25519" >/dev/null
           echo "TUNNL_IDENTITY_FILE=$RUNNER_TEMP/tunnl/id_ed25519" >> "$GITHUB_ENV"
 
-      - name: Check session secrets
+      - name: Verify runtime credentials
         env:
           CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
           HARNESS_ACCESS_PASSWORD: ${{ secrets.HARNESS_ACCESS_PASSWORD }}
         shell: bash
         run: |
-          test -n "$CUSTOM_API_KEY" || { echo "::error::Set CUSTOM_API_KEY in Actions secrets"; exit 1; }
-          test -n "$HARNESS_ACCESS_PASSWORD" || { echo "::error::Set HARNESS_ACCESS_PASSWORD in Actions secrets"; exit 1; }
+          set -euo pipefail
+          test -n "$CUSTOM_API_KEY" || { echo "::error::Set CUSTOM_API_KEY"; exit 1; }
+          if (( ${#HARNESS_ACCESS_PASSWORD} < 16 )); then
+            echo "::error::HARNESS_ACCESS_PASSWORD must be 16+ characters"
+            exit 1
+          fi
           if (( ${{ inputs.session_minutes }} < 10 || ${{ inputs.session_minutes }} > 330 )); then
-            echo "::error::Session duration must be 10-330 minutes"
+            echo "::error::Invalid session duration (10-330)"
             exit 1
           fi
 
-      - name: Launch DeepSeek Harness Web UI
+      - name: Run containerized DeepSeek Harness with periodic persistence
         env:
           CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
           HARNESS_ACCESS_PASSWORD: ${{ secrets.HARNESS_ACCESS_PASSWORD }}
           SESSION_MINUTES: ${{ inputs.session_minutes }}
-          DSH_HOME: ${{ runner.temp }}/deepseek-harness-home
+          SNAPSHOT_INTERVAL_MINUTES: '20'
           DSH_TELEMETRY_DISABLED: '1'
         run: node scripts/launch.mjs
+
+      - name: Final checkpoint even if agent crashed
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker ps --format '{{.Names}}' | grep -Fxq deepseek-environment; then
+            echo "Publishing final environment state to GHCR..."
+            bash scripts/environment-checkpoint.sh
+            echo "### Container snapshot" >> "$GITHUB_STEP_SUMMARY"
+            echo "Saved: \`$ENV_IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+            docker rm -f deepseek-environment >/dev/null
+          else
+            echo "No running environment container to snapshot."
+          fi
