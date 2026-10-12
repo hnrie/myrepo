@@ -77,6 +77,14 @@ stop each session after the selected duration (10–330 minutes). Avrea and
 GitHub can impose independent job limits and usage charges. There is no
 zero-cost promise for uninterrupted hosting.
 
+## Browser cross-origin handling
+
+You can open the tunnl.gg URL from another website or by pasting it into the
+address bar. The authenticated proxy permits only **top-level GET navigation**
+to `/` or `/index.html` from another site. Cross-origin API calls, POSTs,
+iframes, and WebSocket connections remain rejected. The workflow runs
+`node --test scripts/proxy.test.mjs` before starting the tunnel.
+
 ## Security
 
 This is a publicly reachable reverse tunnel to a code-executing agent. Never
