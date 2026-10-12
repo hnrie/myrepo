@@ -25,17 +25,20 @@ jobs:
           echo "Synthetic uncommitted state exists."
 
       - name: Simulate a user pressing Cancel workflow
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           (
-            sleep 4
+            sleep 5
             echo "REQUESTING REGULAR GITHUB WORKFLOW CANCELLATION"
             gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel"
           ) &
-          sleep 40
+          echo "MONITOR LONG-RUNNING ACTION BEGIN"
+          sleep 55
+          echo "MONITOR LONG-RUNNING ACTION END"
 
       - name: Save data after normal Cancel workflow request
         if: always()
