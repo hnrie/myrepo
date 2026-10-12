@@ -12,6 +12,7 @@ on:
 permissions:
   contents: read
   packages: write
+  actions: read
 
 concurrency:
   group: deepseek-harness-session
@@ -19,9 +20,9 @@ concurrency:
 
 jobs:
   harness:
-    # Keep the job eligible to finish a GHCR backup when Cancel is requested.
-    # GitHub can still forcibly terminate it; image upload is best-effort.
-    if: always()
+    # Allow native Cancel workflow to interrupt the foreground step.
+    # Only the final checkpoint step uses always(); cancellation remains best-effort.
+    if: ${{ !cancelled() }}
     runs-on: avrea-ubuntu-latest-32-vcpu
     steps:
       - name: Checkout current environment controller
@@ -97,6 +98,7 @@ jobs:
           CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
           HARNESS_ACCESS_PASSWORD: ${{ secrets.HARNESS_ACCESS_PASSWORD }}
           SESSION_MINUTES: ${{ inputs.session_minutes }}
+          GITHUB_TOKEN: ${{ github.token }}
           DSH_TELEMETRY_DISABLED: '1'
         run: node scripts/launch.mjs
 
