@@ -24,7 +24,7 @@ if (!Number.isInteger(minutes) || minutes < 10 || minutes > 330) {
   throw new Error('Session must be 10-330 minutes');
 }
 
-// Requires DeepSeek Harness 0.2.1-alpha.2 or later with --public-url support.
+// Use npm's latest dist-tag; the public tunnel URL is handled by the authenticated local proxy.
 // Harness loads this override after its bundled Web profile.
 // The API key is read from the environment; it is never stored in the repo.
 const patch = [
@@ -59,7 +59,7 @@ const patch = [
 mkdirSync(join(home, 'profiles', 'web'), { recursive: true, mode: 0o700 });
 writeFileSync(join(home, 'profiles', 'web', 'cordis.patch.yml'), patch, { mode: 0o600 });
 
-const server = startProxy({ password, getToken: () => webToken });
+const server = startProxy({ password, getToken: () => webToken, getPublicUrl: () => url });
 function captureLines(stream, fn) {
   let buf = '';
   stream.on('data', bytes => {
@@ -103,11 +103,9 @@ setTimeout(() => stop(), minutes * 60_000);
 
 function launchHarness(publicUrl) {
   if (harness) return;
-  const fqdn = new URL(publicUrl).hostname;
   console.log('Web UI will be available at ' + publicUrl + ' after start-up.');
   harness = spawn('npx', [
-    '--yes', '@deepseek-ai/dsh@0.2.1-alpha.2', 'web', '--no-open', '--port', '3080',
-    '--public-url', publicUrl + '/', '--trusted-host', fqdn
+    '--yes', '@deepseek-ai/dsh@latest', 'web', '--no-open', '--port', '3080'
   ], {
     cwd: process.cwd(),
     env: { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
