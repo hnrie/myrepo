@@ -1,9 +1,6 @@
 name: Emergency Force Cancel Stuck Run
 
 on:
-  push:
-    paths:
-      - .github/workflows/emergency-force-cancel.yml
   workflow_dispatch:
     inputs:
       run_id:
@@ -21,7 +18,7 @@ jobs:
       - name: Force cancel unresponsive workflow run
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_RUN_ID: ${{ github.event_name == 'push' && '38237712001' || inputs.run_id }}
+          TARGET_RUN_ID: ${{ inputs.run_id }}
         shell: bash
         run: |
           set -euo pipefail
