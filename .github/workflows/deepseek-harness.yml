@@ -19,6 +19,9 @@ concurrency:
 
 jobs:
   harness:
+    # Keep the job eligible to finish a GHCR backup when Cancel is requested.
+    # GitHub can still forcibly terminate it; image upload is best-effort.
+    if: always()
     runs-on: avrea-ubuntu-latest-32-vcpu
     steps:
       - name: Checkout current environment controller
@@ -89,30 +92,38 @@ jobs:
             exit 1
           fi
 
-      - name: Run containerized DeepSeek Harness with periodic persistence
+      - name: Run containerized DeepSeek Harness (save only at shutdown or cancellation)
         env:
           CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
           HARNESS_ACCESS_PASSWORD: ${{ secrets.HARNESS_ACCESS_PASSWORD }}
           SESSION_MINUTES: ${{ inputs.session_minutes }}
-          SNAPSHOT_INTERVAL_MINUTES: '20'
           DSH_TELEMETRY_DISABLED: '1'
         run: node scripts/launch.mjs
 
-      - name: Final checkpoint even if agent crashed
+      - name: Save and cleanup on shutdown or workflow cancellation
+        # Finalizer runs after a normal session, a failed agent, or Cancel.
+        # No periodic snapshots. GitHub cancellation remains best-effort.
         if: always()
         shell: bash
         run: |
           set -euo pipefail
+          echo "SESSION SHUTDOWN: preparing single GHCR filesystem checkpoint"
           if docker ps --format '{{.Names}}' | grep -Fxq deepseek-environment; then
-            if [[ -f "$RUNNER_TEMP/environment-final-saved.ok" ]]; then
-              echo "The launcher already published its final checkpoint; skipping duplicate upload."
+            # Stop the agent process to flush session data before snapshot.
+            # The container's sleep PID 1 stays alive so docker commit works.
+            docker exec deepseek-environment sh -c               'pkill -TERM -f "dsh web" 2>/dev/null || true' || true
+            echo "Saving complete unmounted container filesystem to GHCR..."
+            if bash scripts/environment-checkpoint.sh; then
+              echo "BACKUP CONFIRMED: GHCR CHECKPOINT UPLOADED"
+              echo "### Persistence saved" >> "$GITHUB_STEP_SUMMARY"
+              echo "Restore image: $ENV_IMAGE" >> "$GITHUB_STEP_SUMMARY"
             else
-              echo "Publishing fallback final checkpoint to GHCR..."
-              bash scripts/environment-checkpoint.sh
+              echo "::error::GHCR upload failed during cleanup. Latest successful image remains intact."
+              echo "### Persistence FAILED" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
             fi
-            echo "### Container snapshot" >> "$GITHUB_STEP_SUMMARY"
-            echo "Saved image: $ENV_IMAGE" >> "$GITHUB_STEP_SUMMARY"
             docker rm -f deepseek-environment >/dev/null
+            echo "CLEANUP FINISHED"
           else
-            echo "No running environment container to snapshot."
+            echo "No active Docker environment; skipping snapshot."
           fi
